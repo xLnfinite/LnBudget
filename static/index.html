@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d2740">
+<meta name="description" content="LnBudget 在线记账工具">
+<title>LnBudget · 在线记账</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h5v-6h4v6h5V9.5"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
+  <symbol id="i-tags" viewBox="0 0 24 24"><path d="M12 2H2v10l9.29 9.29a2 2 0 0 0 2.83 0l7.17-7.17a2 2 0 0 0 0-2.83L12 2Z"/><path d="M7 7h.01"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10Z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+  <symbol id="i-log" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-out" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+</svg>
+
+<!-- ==================== 登录视图 ==================== -->
+<div id="loginView" class="login-wrap hidden">
+  <div class="login-bg">
+    <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
+  </div>
+  <div class="login-card">
+    <div class="brand">
+      <span class="brand-logo"><svg><use href="#i-wallet"/></svg></span>
+      <div><h1>LnBudget</h1><p>在线记账 · 数据只存在你自己的服务器上</p></div>
+    </div>
+    <form id="loginForm" autocomplete="on">
+      <label class="field"><span>账号</span>
+        <input id="loginUser" type="text" autocomplete="username" placeholder="请输入账号" required>
+      </label>
+      <label class="field"><span>密码</span>
+        <input id="loginPass" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+      </label>
+      <div id="loginError" class="login-error hidden"></div>
+      <button class="btn btn-primary btn-block" id="loginBtn" type="submit">登 录</button>
+    </form>
+    <p class="login-foot">单用户记账系统 · 所有账目、日志均保存在本机数据库中</p>
+  </div>
+</div>
+
+<!-- ==================== 主应用视图 ==================== -->
+<div id="appView" class="app hidden">
+  <aside class="sidebar">
+    <div class="brand brand-side">
+      <span class="brand-logo"><svg><use href="#i-wallet"/></svg></span>
+      <div><h1>LnBudget</h1><p>在线记账</p></div>
+    </div>
+    <nav class="side-nav">
+      <button class="nav-item" data-page="dashboard"><svg class="ic"><use href="#i-home"/></svg><span>首页</span></button>
+      <button class="nav-item" data-page="records"><svg class="ic"><use href="#i-list"/></svg><span>流水账目</span></button>
+      <button class="nav-item" data-page="categories"><svg class="ic"><use href="#i-tags"/></svg><span>账目分类</span></button>
+      <button class="nav-item" data-page="analysis"><svg class="ic"><use href="#i-chart"/></svg><span>账目分析</span></button>
+      <button class="nav-item" data-page="export"><svg class="ic"><use href="#i-download"/></svg><span>导出账目</span></button>
+      <button class="nav-item" data-page="logs"><svg class="ic"><use href="#i-log"/></svg><span>操作日志</span></button>
+    </nav>
+    <div class="side-user">
+      <div class="avatar" id="userAvatar">A</div>
+      <div class="side-user-info"><b id="sideUserName">admin</b><span id="sideServerTime"></span></div>
+      <button class="icon-btn" id="logoutBtn" title="退出登录"><svg class="ic"><use href="#i-out"/></svg></button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div><h2 id="pageTitle">首页</h2><p id="pageSub"></p></div>
+      <button class="btn btn-primary" id="quickAddBtn"><svg class="ic"><use href="#i-plus"/></svg><span>记一笔</span></button>
+    </header>
+    <main id="content">
+
+      <!-- 首页 -->
+      <section class="page" data-title="首页" data-sub="账目总览" id="page-dashboard">
+        <div class="monthbar">
+          <button class="icon-btn" id="dashPrev" title="上个月">‹</button>
+          <input type="month" id="dashMonth">
+          <button class="icon-btn" id="dashNext" title="下个月">›</button>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" id="dashToday">回到本月</button>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-card income"><div class="stat-label">本月收入</div><div class="stat-value" id="statIncome">¥0.00</div></div>
+          <div class="stat-card expense"><div class="stat-label">本月支出</div><div class="stat-value" id="statExpense">¥0.00</div></div>
+          <div class="stat-card balance"><div class="stat-label">本月结余</div><div class="stat-value" id="statBalance">¥0.00</div></div>
+          <div class="stat-card count"><div class="stat-label">本月笔数</div><div class="stat-value" id="statCount">0</div></div>
+        </div>
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-head"><h3>本月支出构成</h3><a class="link" data-goto="analysis">查看分析 →</a></div>
+            <div class="chart-box"><canvas id="dashDonut"></canvas></div>
+            <div id="dashLegend" class="chart-legend"></div>
+            <div id="dashDonutEmpty" class="empty hidden">本月暂无支出数据</div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>最近账目</h3><a class="link" data-goto="records">全部流水 →</a></div>
+            <div id="dashRecent" class="rec-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 流水账目 -->
+      <section class="page" data-title="流水账目" data-sub="查看、筛选与管理每一笔账" id="page-records">
+        <div class="card">
+          <div class="filters">
+            <input type="month" id="recMonth" title="按月份筛选">
+            <select id="recType"><option value="">全部类型</option><option value="income">收入</option><option value="expense">支出</option></select>
+            <select id="recCat"><option value="">全部分类</option></select>
+            <div class="search-box"><svg class="ic"><use href="#i-search"/></svg><input id="recSearch" type="search" placeholder="搜索备注关键字"></div>
+            <button class="btn btn-ghost btn-sm" id="recClear">重置</button>
+          </div>
+          <div class="rec-head rec-row">
+            <span>交易时间</span><span>分类</span><span>备注</span><span>金额</span><span>操作</span>
+          </div>
+          <div id="recList"></div>
+          <div class="pager">
+            <button class="btn btn-ghost btn-sm" id="recPrev">上一页</button>
+            <span id="recPageInfo"></span>
+            <button class="btn btn-ghost btn-sm" id="recNext">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 账目分类 -->
+      <section class="page" data-title="账目分类" data-sub="自定义名称、图标与颜色" id="page-categories">
+        <div class="cat-group card">
+          <div class="card-head"><h3>支出分类</h3><button class="btn btn-primary btn-sm" id="addExpCat"><svg class="ic"><use href="#i-plus"/></svg>新增支出分类</button></div>
+          <div class="cat-grid" id="expCatGrid"></div>
+        </div>
+        <div class="cat-group card">
+          <div class="card-head"><h3>收入分类</h3><button class="btn btn-primary btn-sm" id="addIncCat"><svg class="ic"><use href="#i-plus"/></svg>新增收入分类</button></div>
+          <div class="cat-grid" id="incCatGrid"></div>
+        </div>
+      </section>
+
+      <!-- 账目分析 -->
+      <section class="page" data-title="账目分析" data-sub="图表统计，可下载 PNG" id="page-analysis">
+        <div class="monthbar">
+          <button class="icon-btn" id="anPrev" title="上个月">‹</button>
+          <input type="month" id="anMonth">
+          <button class="icon-btn" id="anNext" title="下个月">›</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3 id="anPieTitle">本月支出构成</h3><button class="btn btn-ghost btn-sm chart-download" data-chart="anPie"><svg class="ic"><use href="#i-download"/></svg>下载 PNG</button></div>
+          <div class="chart-box"><canvas id="anPie"></canvas></div>
+          <div id="anPieLegend" class="chart-legend grid"></div>
+          <div id="anPieEmpty" class="empty hidden">本月暂无支出数据</div>
+        </div>
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-head"><h3>近 6 个月收支对比</h3><button class="btn btn-ghost btn-sm chart-download" data-chart="anBar"><svg class="ic"><use href="#i-download"/></svg>下载 PNG</button></div>
+            <div class="chart-box"><canvas id="anBar"></canvas></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>近 6 个月结余走势</h3><button class="btn btn-ghost btn-sm chart-download" data-chart="anLine"><svg class="ic"><use href="#i-download"/></svg>下载 PNG</button></div>
+            <div class="chart-box"><canvas id="anLine"></canvas></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 导出账目 -->
+      <section class="page" data-title="导出账目" data-sub="CSV / Excel / JSON / HTML" id="page-export">
+        <div class="card exp-card">
+          <h3 class="sec-title">1. 选择时间范围</h3>
+          <div class="radio-row">
+            <label><input type="radio" name="range" value="month" checked><span>本月</span></label>
+            <label><input type="radio" name="range" value="prev"><span>上月</span></label>
+            <label><input type="radio" name="range" value="all"><span>全部</span></label>
+            <label><input type="radio" name="range" value="custom"><span>自定义</span></label>
+          </div>
+          <div class="custom-range hidden" id="expCustom">
+            <input type="date" id="expStart"><span>至</span><input type="date" id="expEnd">
+          </div>
+          <h3 class="sec-title">2. 选择导出格式</h3>
+          <div class="format-row">
+            <label class="fmt-card"><input type="radio" name="fmt" value="csv" checked><b>CSV</b><span>表格软件通用</span></label>
+            <label class="fmt-card"><input type="radio" name="fmt" value="excel"><b>Excel</b><span>.xls 表格文档</span></label>
+            <label class="fmt-card"><input type="radio" name="fmt" value="json"><b>JSON</b><span>备份 / 程序处理</span></label>
+            <label class="fmt-card"><input type="radio" name="fmt" value="html"><b>HTML</b><span>网页报表，可打印</span></label>
+          </div>
+          <div class="exp-meta" id="expMeta">正在统计…</div>
+          <button class="btn btn-primary btn-lg" id="expBtn"><svg class="ic"><use href="#i-download"/></svg>立即导出下载</button>
+        </div>
+      </section>
+
+      <!-- 操作日志 -->
+      <section class="page" data-title="操作日志" data-sub="登录、增删改、导出等全部操作留痕" id="page-logs">
+        <div class="card">
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>时间</th><th>用户</th><th>IP</th><th>操作</th><th>详情</th></tr></thead>
+              <tbody id="logBody"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button class="btn btn-ghost btn-sm" id="logPrev">上一页</button>
+            <span id="logPageInfo"></span>
+            <button class="btn btn-ghost btn-sm" id="logNext">下一页</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <nav class="bottomnav">
+    <button class="nav-item" data-page="dashboard"><svg class="ic"><use href="#i-home"/></svg><span>首页</span></button>
+    <button class="nav-item" data-page="records"><svg class="ic"><use href="#i-list"/></svg><span>流水</span></button>
+    <button class="nav-item" data-page="categories"><svg class="ic"><use href="#i-tags"/></svg><span>分类</span></button>
+    <button class="nav-item" data-page="analysis"><svg class="ic"><use href="#i-chart"/></svg><span>分析</span></button>
+    <button class="nav-item" data-page="export"><svg class="ic"><use href="#i-download"/></svg><span>导出</span></button>
+    <button class="nav-item" data-page="logs"><svg class="ic"><use href="#i-log"/></svg><span>日志</span></button>
+  </nav>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
