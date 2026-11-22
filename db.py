@@ -34,6 +34,11 @@ CREATE TABLE IF NOT EXISTS logs (
     detail TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_records_time ON records (txn_time);
 CREATE INDEX IF NOT EXISTS idx_records_cat  ON records (category_id);
 CREATE INDEX IF NOT EXISTS idx_logs_ts      ON logs (ts);
@@ -95,6 +100,15 @@ class Database:
     def query_one(self, sql, params=()):
         rows = self.query(sql, params)
         return rows[0] if rows else None
+
+    def get_setting(self, key, default=None):
+        """读取一条设置；不存在时返回 default。"""
+        row = self.query_one("SELECT value FROM settings WHERE key = ?", (key,))
+        return row["value"] if row else default
+
+    def set_setting(self, key, value):
+        """写入/覆盖一条设置（登录密码哈希等需要运行期持久化的值）。"""
+        self.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
 
     def _seed(self):
         if self.query_one("SELECT COUNT(*) AS n FROM categories")["n"] == 0:

@@ -52,11 +52,18 @@ MAX_BODY_SIZE = 1024 * 1024   # 请求体上限 1MB
 # 登录加固：
 #   MIN_LOGIN_INTERVAL —— 同一 IP 两次登录尝试的最小间隔，防攻击者用多 IP 轮换持续刷 PBKDF2 计算（CPU DoS）
 #   MAX_PASSWORD_LEN  —— 密码长度上限，防止超大输入进入哈希计算
-#   DEFAULT_PASSWORD_HASH —— 可选：config.py 显式声明的"出厂默认密码哈希"，用于启动时检测用户是否忘记修改密码；
-#                            未声明（None）则跳过检测。仓库模板 config.example.py 不含任何真实哈希。
+#   MIN_PASSWORD_LEN  —— 修改密码时新密码的最小长度
+#   MAX_USERNAME_LEN  —— 用户名长度上限
+#   PASSWORD_ITERATIONS —— PBKDF2-SHA256 迭代次数（OWASP 2023 推荐 600000）
 MIN_LOGIN_INTERVAL = 1.0
 MAX_PASSWORD_LEN = 256
-DEFAULT_PASSWORD_HASH = getattr(config, "DEFAULT_PASSWORD_HASH", None)
+MIN_PASSWORD_LEN = 8
+MAX_USERNAME_LEN = 32
+PASSWORD_ITERATIONS = 600000
+
+# 出厂初始密码：首次启动时自动写入数据库（无需用户手动生成哈希）；
+# 登录后可在页面内「修改密码」，修改结果持久化到数据库 settings 表。
+INITIAL_PASSWORD = "admin"
 
 
 class ApiError(Exception):
@@ -81,6 +88,45 @@ def verify_password(password, stored):
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(digest.hex(), hash_hex)
+
+
+def hash_password(password, iterations=PASSWORD_ITERATIONS):
+    """生成 PBKDF2-SHA256 加盐哈希。
+
+    注意：盐每次随机，所以同一个密码多次生成的结果一定不同——这是正常现象，
+    校验时盐本身就从存储值中取出，哈希不同不代表校验失败。
+    """
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations, dklen=32)
+    return "pbkdf2_sha256$%d$%s$%s" % (iterations, salt.hex(), digest.hex())
+
+
+def init_password():
+    """确保数据库中存在登录账号与密码哈希，返回当前是否仍在使用初始密码。
+
+    优先级：数据库已存哈希（运行期修改过）> config.PASSWORD_HASH（兼容旧配置）
+    > 出厂初始密码 INITIAL_PASSWORD。用户名同理：数据库已存 > config.USERNAME > admin。
+    """
+    if not db.get_setting("username"):
+        db.set_setting("username", (getattr(config, "USERNAME", "") or "admin").strip() or "admin")
+    if db.get_setting("password_hash"):
+        return db.get_setting("password_is_initial") == "1"
+    seed = (getattr(config, "PASSWORD_HASH", "") or "").strip()
+    if seed:
+        db.set_setting("password_hash", seed)
+        db.set_setting("password_is_initial", "0")
+        return False
+    db.set_setting("password_hash", hash_password(INITIAL_PASSWORD))
+    db.set_setting("password_is_initial", "1")
+    return True
+
+
+def current_username():
+    """当前生效的登录用户名：运行期修改过则取数据库，否则取配置种子。"""
+    return db.get_setting("username") or (getattr(config, "USERNAME", "") or "admin")
+
+
+USING_INITIAL_PASSWORD = init_password()
 
 
 class LnBudgetHandler(BaseHTTPRequestHandler):
@@ -274,7 +320,11 @@ class LnBudgetHandler(BaseHTTPRequestHandler):
         if self.command == "GET" and path == "/api/me":
             user = self._auth()
             return self._ok({"username": user, "server_time": now_str(),
-                             "app": config.APP_NAME, "version": config.VERSION})
+                             "app": config.APP_NAME, "version": config.VERSION,
+                             "initial_password": db.get_setting("password_is_initial") == "1"})
+
+        if path == "/api/account":
+            return self._api_account()
 
         if path == "/api/login":
             return self._api_login()
@@ -387,9 +437,10 @@ class LnBudgetHandler(BaseHTTPRequestHandler):
         body = self._body_json()
         username = str(body.get("username", ""))
         password = str(body.get("password", ""))
-        user_ok = hmac.compare_digest(username, config.USERNAME)
+        user_ok = hmac.compare_digest(username, current_username())
+        stored = db.get_setting("password_hash") or ""
         if len(password) <= MAX_PASSWORD_LEN:
-            pass_ok = verify_password(password, config.PASSWORD_HASH)
+            pass_ok = verify_password(password, stored)
         else:
             pass_ok = False  # 超长密码必然错误，直接跳过昂贵的 PBKDF2 计算
         if not (user_ok and pass_ok):
@@ -406,12 +457,50 @@ class LnBudgetHandler(BaseHTTPRequestHandler):
             if sessions[key]["expires"] < now:
                 del sessions[key]
         token = secrets.token_urlsafe(32)
-        sessions[token] = {"user": config.USERNAME,
+        login_user = current_username()
+        sessions[token] = {"user": login_user,
                            "expires": now + timedelta(hours=config.SESSION_HOURS)}
-        ledger.log("登录成功", "用户「%s」登录（IP: %s）" % (config.USERNAME, ip),
-                   {"user": config.USERNAME, "ip": ip})
-        return self._json(200, {"ok": True, "data": {"username": config.USERNAME}},
+        ledger.log("登录成功", "用户「%s」登录（IP: %s）" % (login_user, ip),
+                   {"user": login_user, "ip": ip})
+        return self._json(200, {"ok": True, "data": {"username": login_user,
+                                                     "initial_password": db.get_setting("password_is_initial") == "1"}},
                           extra={"Set-Cookie": self._session_cookie(token, config.SESSION_HOURS * 3600)})
+
+    def _api_account(self):
+        """修改登录账号（用户名 / 密码）：校验当前密码 → 持久化 → 所有会话失效，强制重新登录。"""
+        self._auth()
+        if self.command != "POST":
+            raise ApiError(405, "方法不允许")
+        body = self._body_json()
+        current = str(body.get("current_password", ""))
+        new_user = str(body.get("new_username") or "").strip()
+        new_pass = str(body.get("new_password") or "")
+        if len(current) > MAX_PASSWORD_LEN or not verify_password(current, db.get_setting("password_hash") or ""):
+            raise ApiError(401, "当前密码不正确")
+        cur_user = current_username()
+        changed_user = False
+        changed_pass = False
+        if new_user and new_user != cur_user:
+            if len(new_user) > MAX_USERNAME_LEN:
+                raise ApiError(400, "用户名过长（最多 %d 个字符）" % MAX_USERNAME_LEN)
+            db.set_setting("username", new_user)
+            changed_user = True
+        if new_pass:
+            if len(new_pass) < MIN_PASSWORD_LEN:
+                raise ApiError(400, "新密码至少需要 %d 位" % MIN_PASSWORD_LEN)
+            if len(new_pass) > MAX_PASSWORD_LEN:
+                raise ApiError(400, "新密码过长（最多 %d 位）" % MAX_PASSWORD_LEN)
+            if new_pass == current:
+                raise ApiError(400, "新密码不能与当前密码相同")
+            db.set_setting("password_hash", hash_password(new_pass))
+            db.set_setting("password_is_initial", "0")
+            changed_pass = True
+        if not (changed_user or changed_pass):
+            raise ApiError(400, "用户名与密码均未改动")
+        sessions.clear()  # 强制重新登录：包括当前令牌在内全部失效
+        what = "、".join(s for s, on in (("用户名", changed_user), ("密码", changed_pass)) if on)
+        ledger.log("修改账户", "用户「%s」更新了%s" % (cur_user, what), {"user": cur_user, "ip": self._ip()})
+        return self._ok({"username": db.get_setting("username"), "re_login": True})
 
     def _api_category(self, cid):
         user = self._auth()
@@ -548,16 +637,16 @@ def main():
     print("  服务地址 : %s://%s:%d" % (scheme, args.host, port))
     if scheme == "https":
         print("  HTTPS 证书: %s" % config.SSL_CERT)
-    print("  登录账号 : %s （密码见 config.py）" % config.USERNAME)
+    print("  登录账号 : %s" % current_username())
+    if USING_INITIAL_PASSWORD:
+        print("  初始密码 : admin（尚未修改，登录后请立即在页面左侧「修改密码」中修改）")
     print("  数据文件 : %s" % config.DB_PATH)
     print("  按 Ctrl+C 停止服务")
     print("=" * 58)
-    if DEFAULT_PASSWORD_HASH and config.PASSWORD_HASH == DEFAULT_PASSWORD_HASH:
-        # config.py 声明了出厂默认密码哈希且仍在启用：默认密码是公开的，
-        # 若部署后未修改，等于没有密码，任何人都能直接登录。
-        print("  ⚠ 严重警告：当前仍在使用出厂默认密码！")
-        print("    任何知道默认密码的人都能登录本系统，请立即修改密码：")
-        print("    按 config.py 第 12-15 行注释中的命令生成新哈希并替换 PASSWORD_HASH。")
+    if db.get_setting("password_is_initial") == "1":
+        # 初始密码 admin 是公开的：若部署后未修改，任何扫描器都能直接登录。
+        print("  ⚠ 提示：当前仍在使用初始密码 admin，首次登录后请立即修改！")
+        print("    修改入口：登录后点击左侧栏钥匙图标（或设置区「修改密码」）。")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

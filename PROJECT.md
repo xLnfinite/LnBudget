@@ -14,12 +14,12 @@
 | 定位 | 单用户个人在线记账（记账 / 分类 / 统计图表 / 多格式导出 / 操作日志） |
 | 运行时 | Python **3.8+**，仅标准库；前端原生 JS，无构建步骤 |
 | 启动 | `python3 app.py [--host 0.0.0.0] [--port 8000]` |
-| 默认地址 / 账号 | `http://<ip>:8000` · `admin`（仓库不含任何密码；克隆后复制 `config.example.py` 为 `config.py` 并自行生成密码哈希） |
-| 数据 | `data/ledger.db`（SQLite，WAL），首次启动自动建库并写入 9 个默认分类 |
+| 默认地址 / 账号 | `http://<ip>:8000` · 账号 `admin` / 初始密码 `admin`（首次启动自动初始化并持久化到数据库，登录后请在页面内修改；无需手动生成哈希） |
+| 数据 | `data/ledger.db`（SQLite，WAL），首次启动自动建库并写入 9 个默认分类；密码哈希存于 `settings` 表 |
 | 传输加密 | 可选 HTTPS：`config.SSL_CERT` / `SSL_KEY` 填 PEM 路径即启用（单端口仅 HTTPS，TLS ≥ 1.2，自动 Secure Cookie + HSTS） |
-| 自检 | `python test_api.py`（临时库 + 随机端口，50 项断言） |
+| 自检 | `python test_api.py`（临时库 + 随机端口，55 项断言） |
 | 版本来源 | `config.VERSION`（唯一） |
-| 行数量级 | app.py 572 · models.py 434 · db.py 128 · exporter.py 144 · test_api.py 228<br>app.js 705 · charts.js 308 · app.css 277 · index.html 233 |
+| 行数量级 | app.py 576 · models.py 382 · db.py 124 · exporter.py 122 · test_api.py 224<br>app.js 708 · charts.js 287 · app.css 277 · index.html 221 |
 
 ---
 
@@ -222,7 +222,7 @@ if (r + thick / 2 > maxR) r = maxR - thick / 2;   // 小画布兜底
 
 | 机制 | 实现位置 | 说明 |
 | --- | --- | --- |
-| 密码 | `config.PASSWORD_HASH` + `app.verify_password` | PBKDF2-SHA256、16 字节随机盐；新哈希推荐 600000 迭代（OWASP 2023，旧 200000 仍兼容）；`hmac.compare_digest` 定长比较；迭代次数限制 1~1e7 防 DoS；密码长度上限 256（超长跳过哈希计算） |
+| 密码 | `db.settings.password_hash` + `app.verify_password` / `hash_password` | PBKDF2-SHA256、16 字节随机盐（同一密码每次哈希不同属正常）；600000 迭代（OWASP 2023）；`hmac.compare_digest` 定长比较；迭代次数限制 1~1e7 防 DoS；密码长度上限 256（超长跳过哈希计算）；哈希持久化在数据库 `settings` 表，`config.PASSWORD_HASH` 仅作首次初始化种子（留空则用初始密码 `admin`） |
 | 登录锁定 | `_api_login` + `login_fails` | 同 IP 10 分钟内失败 5 次 → 429 并倒计时；同一 IP 两次尝试最小间隔 1 秒（`MIN_LOGIN_INTERVAL`，429 且不计失败次数）；内存字典超 1000 项时全局清理；`TRUST_XFF=False` 默认不信任伪造头 |
 | 会话 | `sessions` 字典 + Cookie | 令牌 `secrets.token_urlsafe(32)`（256 位）；`HttpOnly; SameSite=Lax; Path=/`；12h 滑动过期（每次请求续期）；登录时清理过期项 |
 | CSRF | `_csrf_check` | 写方法必须带 `X-Requested-With: XMLHttpRequest`；登录接口豁免（登录前还没有会话） |
@@ -235,9 +235,10 @@ if (r + thick / 2 > maxR) r = maxR - thick / 2;   // 小画布兜底
 | CSV 注入 | `exporter._csv_cell` | `= + - @ \t \r` 开头加 `'` 前缀 |
 | HTML 注入 | `exporter._esc`（`html.escape`）+ 前端 `esc()` | 导出报表与页面渲染双保险 |
 | 文件权限 | `db.Database.__init__` / `_harden_permissions` | `umask 077`；POSIX 下 600/700；Windows 跳过 |
-| 默认密码检测 | `main()` + `config.DEFAULT_PASSWORD_HASH` | 本地 `config.py` 可声明出厂默认密码哈希；启动时若 `PASSWORD_HASH` 与之相同则打印严重警告。该值禁止写入仓库任何文件 |
+| 修改账户 | `_api_account`（`POST /api/account`）+ 前端钥匙图标弹窗 | 校验当前密码；可同时改用户名（≤32 字符）与密码（8~256 位）；改后写入 `settings.username` / `settings.password_hash` 并清除 `password_is_initial` 标记；所有会话全部失效（含当前），前端自动刷新强制重新登录；记入操作日志 |
+| 默认密码检测 | `init_password()` + `settings.password_is_initial` | 首次启动用 `config.PASSWORD_HASH` 或初始密码 `admin` 初始化；`password_is_initial=1` 时启动横幅打印警告，`/api/me` 返回 `initial_password`，前端登录后 toast 提醒立即改密 |
 
-**已知残余风险（个人自用可接受，公网部署前要处理）**：默认明文 HTTP（可通过 `config.SSL_CERT` 内置 HTTPS 消除，见 §10.1）；会话存内存（重启即全员下线、单进程限制）；除登录外的接口无频率限制；无审计日志轮转以外的日志文件；密码修改需手动改配置文件。
+**已知残余风险（个人自用可接受，公网部署前要处理）**：默认明文 HTTP（可通过 `config.SSL_CERT` 内置 HTTPS 消除，见 §10.1）；会话存内存（重启即全员下线、单进程限制）；除登录外的接口无频率限制；无审计日志轮转以外的日志文件。
 
 ---
 
@@ -279,7 +280,7 @@ sudo systemctl enable --now lnbudget
 
 ### 10.2 自检脚本
 
-`test_api.py` 在**进程内**起服务：先把 `config.DB_PATH` 指到 `tempfile.mkdtemp()` 下的临时库、`config.PORT=0`（随机端口），再 `import app`，然后按顺序断言 50 项：静态资源 → 413 → 401 → 登录（含"HTTP 下 Cookie 不带 Secure"）→ HTTPS 配置默认关闭与坏证书报错 → CSRF 403 → 分类 CRUD（含 400 校验）→ 账目 CRUD（负数/不存在分类 400）→ 统计 → 四格式导出（含 BOM、`filename*`、公式注入、日期边界）→ 日志 → 删除保护 409 → 登出。测试密码可用环境变量 `LNBUDGET_PASSWORD` 提供；未设置时自动生成随机密码（对应哈希在导入 app 前动态生成）。
+`test_api.py` 在**进程内**起服务：先把 `config.DB_PATH` 指到 `tempfile.mkdtemp()` 下的临时库、`config.PORT=0`（随机端口），再 `import app`，然后按顺序断言 56 项：静态资源 → 413 → 401 → 登录（含"HTTP 下 Cookie 不带 Secure"）→ HTTPS 配置默认关闭与坏证书报错 → CSRF 403 → 分类 CRUD（含 400 校验）→ 账目 CRUD（负数/不存在分类 400）→ 统计 → 四格式导出（含 BOM、`filename*`、公式注入、日期边界）→ 日志 → 删除保护 409 → 修改账户（新密码太短 400 / 当前密码错 401 / 改用户名+密码 200 / 旧用户名失效 401 / 旧密码失效 401 / 新账号新密码可登录 200）→ 登出。测试密码可用环境变量 `LNBUDGET_PASSWORD` 提供；未设置时自动生成随机密码（对应哈希在导入 app 前动态生成）。
 
 > 注意：脚本依赖"可写的临时目录 + sqlite 能在其中建库"。在某些受限沙箱里（如把临时目录用 `mode=0o700` 创建的 Windows 沙箱）会报 `unable to open database file`——那是环境限制，与代码无关；在真实机器上直接跑即可。
 
@@ -312,6 +313,8 @@ sudo systemctl enable --now lnbudget
 | 2026-10-27 | `PROJECT.md`（新增） | 本文档：系统现状知识库 |
 | 2026-10-27 | `app.py`、`config.py`、`test_api.py`、`README.md`、`PROJECT.md`、`DEVELOPMENT.md` | 支持内置 HTTPS：新增 `build_ssl_context()` / `_tls()` / `_session_cookie()`，`main()` 按 `SSL_CERT` 包装监听 socket；TLS ≥ 1.2、HSTS、Cookie `Secure`；自检增至 46 项（含 HTTPS 断言） |
 | 2026-11-22 | 全部文件 | 服务器稳定性加固（handler 超时 30s、并发 64、连接异常静默、HTTPS 握手延迟）；登录限速 / 密码长度上限 / 默认密码启动警告；`config.py` 移出版本控制并提供 `config.example.py`，清除仓库中的密码痕迹；`README.md` 精简为使用者向，技术细节归入本文档 |
+| 2026-11-22 | `app.py`、`db.py`、`config*.py`、`static/`、`test_api.py`、文档 | 取消手动生成密码哈希：初始账号 `admin` / 密码 `admin` 首次启动自动初始化；密码哈希改存数据库 `settings` 表；新增 `POST /api/password` 在线修改密码（当前密码校验、新密码 ≥8 位、改后其他会话失效）与前端钥匙弹窗；`/api/me` 暴露 `initial_password` 标记；自检增至 55 项 |
+| 2026-11-22 | `app.py`、`static/js/app.js`、`test_api.py`、文档 | 修改账户：钥匙弹窗支持同时修改用户名（存 `settings.username`，`config.USERNAME` 仅首次初始化种子）与密码；确认后所有会话失效、页面自动刷新强制重新登录；接口调整为 `POST /api/account`；自检增至 56 项 |
 
 ---
 

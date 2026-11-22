@@ -228,6 +228,19 @@ req("DELETE", "/api/categories/%d" % used, expect=409)     # 有账目，禁止�
 req("DELETE", "/api/records/%d" % rec_id)
 req("DELETE", "/api/categories/%d" % used)                 # 删除账目后可删除分类
 
+print("== 修改账户（用户名 / 密码） ==")
+NEW_USERNAME = "user_" + secrets.token_hex(3)
+NEW_PASSWORD = secrets.token_urlsafe(9) + "A1"
+req("POST", "/api/account", {"current_password": PASSWORD, "new_username": "admin", "new_password": "1234567"}, expect=400)  # 新密码太短
+req("POST", "/api/account", {"current_password": "wrong", "new_username": NEW_USERNAME, "new_password": NEW_PASSWORD}, expect=401)  # 当前密码错误
+req("POST", "/api/account", {"current_password": PASSWORD, "new_username": NEW_USERNAME, "new_password": NEW_PASSWORD})  # 同时修改用户名与密码
+time.sleep(1.1)  # 登录限速：失败后 1 秒内不允许再次尝试
+req("POST", "/api/login", {"username": "admin", "password": PASSWORD}, expect=401)  # 旧账号已失效
+time.sleep(1.1)
+req("POST", "/api/login", {"username": NEW_USERNAME, "password": PASSWORD}, expect=401)  # 旧密码已失效
+time.sleep(1.1)
+req("POST", "/api/login", {"username": NEW_USERNAME, "password": NEW_PASSWORD})  # 新账号 + 新密码可登录
+
 print("== 退出登录 ==")
 req("POST", "/api/logout")
 req("GET", "/api/me", expect=401)

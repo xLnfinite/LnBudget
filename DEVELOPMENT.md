@@ -174,8 +174,9 @@ LnBudget/
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/me` | 当前会话信息 |
+| GET | `/api/me` | 当前会话信息（含 `initial_password` 标记） |
 | POST | `/api/login` | 登录（含失败锁定） |
+| POST | `/api/account` | 修改账户（校验当前密码；可同时改用户名 ≤32 字符与密码 8~256 位；改后所有会话失效，需重新登录） |
 | POST | `/api/logout` | 退出 |
 | GET/POST | `/api/categories` | 分类列表（带当月用量）/ 新增分类 |
 | PUT/DELETE | `/api/categories/{id}` | 修改 / 删除分类（占用时 409） |
@@ -254,9 +255,10 @@ LnBudget/
 
 | 项 | 要求 |
 | --- | --- |
-| 密码存储 | 仅存 PBKDF2-SHA256 加盐哈希，禁止明文 / 弱哈希；迭代次数推荐 600000（OWASP 2023），旧格式（如 200000）仍兼容但新生成哈希一律用 600000 |
+| 密码存储 | 仅存 PBKDF2-SHA256 加盐哈希，禁止明文 / 弱哈希；迭代次数 600000（OWASP 2023）；用户名与密码哈希均持久化在数据库 `settings` 表（`username` / `password_hash`），`config.USERNAME` / `config.PASSWORD_HASH` 仅作首次初始化种子（密码留空则使用初始密码 `admin`），禁止把任何真实哈希写入仓库文件 |
+| 初始密码 | 账号 `admin` / 初始密码 `admin` 首次启动自动初始化（`init_password()`），并以 `settings.password_is_initial=1` 标记；登录后通过页面修改密码即清除标记。初始密码检测（启动警告 + `/api/me` 的 `initial_password` 标记）不得移除 |
 | 登录加固 | 失败 ≥ `MAX_LOGIN_FAILS` 次锁定 `LOGIN_LOCK_MINUTES` 分钟（429）；同一 IP 两次尝试最小间隔 `MIN_LOGIN_INTERVAL`（1 秒，429，不计入失败次数）；密码长度上限 `MAX_PASSWORD_LEN`（256，超长直接失败且跳过哈希计算）；不信任 `X-Forwarded-For`（`TRUST_XFF=False`） |
-| 默认密码检测 | `main()` 启动时若 `config.DEFAULT_PASSWORD_HASH` 已声明且与 `PASSWORD_HASH` 相同，打印严重警告（防忘记改密）；检测机制不得移除，但默认哈希只允许放在本地 `config.py`，**禁止**写入仓库任何文件（含注释 / 文档 / 测试） |
+| 默认密码检测 | `init_password()` + `settings.password_is_initial`；启动时若仍为初始密码则打印警告，前端登录后 toast 提醒 |
 | 会话 | Cookie `HttpOnly + SameSite=Lax`；令牌 ≥ 256 位随机；过期清理；**TLS 连接必须带 `Secure`**（统一走 `_session_cookie()`，禁止手写 Set-Cookie） |
 | CSRF | 所有写接口校验自定义头（§6.5） |
 | XSS | 前端渲染一律 `esc()`；后端输出 XML/HTML 用 `html.escape` |
@@ -274,7 +276,7 @@ LnBudget/
 
 ### 9.1 自检脚本（test_api.py）
 
-- 端到端覆盖：静态资源、鉴权（401/413/锁定前失败）、登录加固（超长密码 401、同 IP 1 秒内重试 429）、CSRF（403）、分类 CRUD（含校验 400）、账目 CRUD（负数/不存在分类 400）、统计、四种导出、日期范围边界、公式注入、日志、删除保护（409）、登出。
+- 端到端覆盖：静态资源、鉴权（401/413/锁定前失败）、登录加固（超长密码 401、同 IP 1 秒内重试 429）、CSRF（403）、分类 CRUD（含校验 400）、账目 CRUD（负数/不存在分类 400）、统计、四种导出、日期范围边界、公式注入、日志、删除保护（409）、修改账户（太短 400 / 当前密码错 401 / 改用户名+密码 200 / 旧用户名失效 / 旧密码失效 / 新账号新密码可登录）、登出。
 - 使用**临时数据库**（`tempfile.mkdtemp`）+ **随机端口**，运行后不影响正式数据。
 - 测试密码通过环境变量 `LNBUDGET_PASSWORD` 注入，禁止在代码中硬编码新测试凭据（现有默认值仅为向后兼容）。
 - 新增 API / 行为变更时，必须在 `test_api.py` 增加对应断言，并保证 `python test_api.py` 全绿。
@@ -304,7 +306,7 @@ LnBudget/
 - 日志：访问日志输出到 stdout，可 `nohup ... >> data/server.log 2>&1 &` 落盘。
 - 公网部署：启用 HTTPS——在 `config.py` 填 `SSL_CERT` / `SSL_KEY` 走内置 TLS（单端口仅 HTTPS），或继续用反向代理（Nginx/Caddy）+ HTTPS；如代理位于可信环境才可开 `TRUST_XFF`。
 - 连接层稳定：TLS 握手推迟到连接线程内完成（`do_handshake_on_connect=False`），慢速/扫描连接不会阻塞 accept；空闲连接 30s 超时自动释放，并发超过 `MAX_CONCURRENT_REQUESTS` 时新连接被直接关闭；客户端异常（断连、耗时探测）不会终止进程或刷屏 traceback。若需调整上限，改 `config.py` 的 `MAX_CONCURRENT_REQUESTS` 即可。
-- 更换密码：用 README 中哈希命令生成新哈希（600000 迭代）替换 `config.py` 的 `PASSWORD_HASH`，**禁止明文密码入库**；部署前必须更换出厂默认密码，并建议 `chmod 600 config.py`（哈希可被离线爆破，且**切勿**把 `config.py` 提交到公开 Git 仓库）。
+- 更换账号密码：登录后在页面内「修改账户」完成（`POST /api/account`，可同时改用户名，自动写入数据库并让所有会话失效、强制重新登录），**禁止明文密码入库**；忘记密码时删除 `settings` 表中 `password_hash` 与 `username` 两行后重启即恢复 `admin / admin`；部署前必须修改初始密码，并建议 `chmod 600 config.py`（**切勿**把 `config.py` 提交到公开 Git 仓库）。
 
 ---
 

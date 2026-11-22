@@ -543,6 +543,9 @@ async function enterApp(user) {
     await loadCategories();
   } catch { /* 分类加载失败时各页面会自行提示 */ }
   setPage("dashboard");
+  if (user.initial_password) {
+    toast("当前为初始密码 admin，请点击左侧钥匙图标尽快修改", "info", 6000);
+  }
 }
 
 function showLogin() {
@@ -560,12 +563,68 @@ async function doLogout() {
   toast("已退出登录", "info");
   showLogin();
 }
+
+/* ================= 修改账户（用户名 / 密码） ================= */
+function accountModal() {
+  const curUser = (state.user && state.user.username) || "";
+  const m = openModal(`
+    <div class="modal-head"><h3>修改账户</h3><button class="icon-btn" data-close>${icon("i-x")}</button></div>
+    <div class="modal-body">
+      <label class="field"><span>用户名</span>
+        <input type="text" id="pwUser" maxlength="32" autocomplete="username" value="${esc(curUser)}" placeholder="登录用户名">
+      </label>
+      <label class="field"><span>当前密码</span>
+        <input type="password" id="pwCurrent" autocomplete="current-password" placeholder="请输入当前密码">
+      </label>
+      <label class="field"><span>新密码（留空则不修改，至少 8 位）</span>
+        <input type="password" id="pwNew" autocomplete="new-password" placeholder="至少 8 位">
+      </label>
+      <label class="field"><span>确认新密码</span>
+        <input type="password" id="pwConfirm" autocomplete="new-password" placeholder="再次输入新密码">
+      </label>
+      <div class="form-error hidden" id="pwError"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button class="btn btn-primary" id="pwSave">确认修改</button>
+    </div>`);
+
+  const errEl = m.el.querySelector("#pwError");
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.remove("hidden"); };
+  m.el.querySelector("#pwCurrent").focus();
+  m.el.querySelector("#pwSave").addEventListener("click", async (e) => {
+    const btn = e.target;
+    const username = m.el.querySelector("#pwUser").value.trim();
+    const current = m.el.querySelector("#pwCurrent").value;
+    const next = m.el.querySelector("#pwNew").value;
+    const confirm = m.el.querySelector("#pwConfirm").value;
+    if (!username) return showErr("请输入用户名");
+    if (username.length > 32) return showErr("用户名最多 32 个字符");
+    if (!current) return showErr("请输入当前密码");
+    if (next.length && next.length < 8) return showErr("新密码至少需要 8 位");
+    if (next !== confirm) return showErr("两次输入的新密码不一致");
+    if (username === curUser && !next) return showErr("用户名和密码都没有修改");
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    try {
+      await POST("/api/account", { current_password: current, new_username: username, new_password: next });
+      m.close();
+      toast("账户已更新，请使用新账号重新登录", "ok", 3000);
+      setTimeout(() => location.reload(), 900);  // 所有会话已失效，强制回登录页
+    } catch (err) {
+      showErr(err.message);
+      btn.disabled = false;
+      btn.textContent = "确认修改";
+    }
+  });
+}
 /* ================= 事件绑定 ================= */
 function bindStatic() {
   $$("[data-page]").forEach((el) => el.addEventListener("click", () => setPage(el.dataset.page)));
   $$("[data-goto]").forEach((el) => el.addEventListener("click", () => setPage(el.dataset.goto)));
   $("#loginForm").addEventListener("submit", doLogin);
   $("#logoutBtn").addEventListener("click", doLogout);
+  $("#pwdBtn").addEventListener("click", accountModal);
   $("#quickAddBtn").addEventListener("click", () => recordModal());
 
   // 首页月份
