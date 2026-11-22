@@ -19,7 +19,7 @@
 | 传输加密 | 可选 HTTPS：`config.SSL_CERT` / `SSL_KEY` 填 PEM 路径即启用（单端口仅 HTTPS，TLS ≥ 1.2，自动 Secure Cookie + HSTS） |
 | 自检 | `python test_api.py`（临时库 + 随机端口，50 项断言） |
 | 版本来源 | `config.VERSION`（唯一） |
-| 行数量级 | app.py 486 · models.py 434 · db.py 128 · exporter.py 144 · test_api.py 215<br>app.js 705 · charts.js 305 · app.css 277 · index.html 233 |
+| 行数量级 | app.py 572 · models.py 434 · db.py 128 · exporter.py 144 · test_api.py 228<br>app.js 705 · charts.js 308 · app.css 277 · index.html 233 |
 
 ---
 
@@ -222,21 +222,22 @@ if (r + thick / 2 > maxR) r = maxR - thick / 2;   // 小画布兜底
 
 | 机制 | 实现位置 | 说明 |
 | --- | --- | --- |
-| 密码 | `config.PASSWORD_HASH` + `app.verify_password` | PBKDF2-SHA256、20 万次迭代、16 字节随机盐；`hmac.compare_digest` 定长比较；迭代次数限制 1~1e7 防 DoS |
-| 登录锁定 | `_api_login` + `login_fails` | 同 IP 10 分钟内失败 5 次 → 429 并倒计时；内存字典超 1000 项时全局清理；`TRUST_XFF=False` 默认不信任伪造头 |
+| 密码 | `config.PASSWORD_HASH` + `app.verify_password` | PBKDF2-SHA256、16 字节随机盐；新哈希推荐 600000 迭代（OWASP 2023，旧 200000 仍兼容）；`hmac.compare_digest` 定长比较；迭代次数限制 1~1e7 防 DoS；密码长度上限 256（超长跳过哈希计算） |
+| 登录锁定 | `_api_login` + `login_fails` | 同 IP 10 分钟内失败 5 次 → 429 并倒计时；同一 IP 两次尝试最小间隔 1 秒（`MIN_LOGIN_INTERVAL`，429 且不计失败次数）；内存字典超 1000 项时全局清理；`TRUST_XFF=False` 默认不信任伪造头 |
 | 会话 | `sessions` 字典 + Cookie | 令牌 `secrets.token_urlsafe(32)`（256 位）；`HttpOnly; SameSite=Lax; Path=/`；12h 滑动过期（每次请求续期）；登录时清理过期项 |
 | CSRF | `_csrf_check` | 写方法必须带 `X-Requested-With: XMLHttpRequest`；登录接口豁免（登录前还没有会话） |
 | 请求体 | `_body_json` | >1MB → 413（先排空最多 1MB+64KB 再报错，避免脏连接） |
-| 慢连接 | `server.timeout = 30` + daemon 线程 | 防线程耗尽 |
+| 慢连接 | handler `timeout=30` + `GuardedHTTPServer` 并发上限 64 | 单连接读写超时 30 秒；同时处理连接数上限 `MAX_CONCURRENT_REQUESTS=64`，超出直接关闭；连接类异常（RST / 超时 / TLS 错误）静默处理不打印 traceback |
 | 路径穿越 | `_static` | `realpath` 后必须以静态根为前缀 |
-| 响应头 | `_send` | CSP / X-Frame-Options / nosniff / Referrer-Policy / no-store；TLS 下另加 HSTS |
+| 响应头 | `_send` | CSP / X-Frame-Options / nosniff / Referrer-Policy / Permissions-Policy / no-store；TLS 下另加 HSTS |
 | TLS | `build_ssl_context()` + `main()` | 配置 `SSL_CERT` 即单端口 HTTPS，最低 TLS 1.2；证书/私钥无效时拒绝启动（非零退出）并打印原因；未配置则保持 HTTP |
 | Session Cookie | `_session_cookie()` | 统一构造：`Path=/; HttpOnly; SameSite=Lax`；TLS 连接自动追加 `Secure` |
 | CSV 注入 | `exporter._csv_cell` | `= + - @ \t \r` 开头加 `'` 前缀 |
 | HTML 注入 | `exporter._esc`（`html.escape`）+ 前端 `esc()` | 导出报表与页面渲染双保险 |
 | 文件权限 | `db.Database.__init__` / `_harden_permissions` | `umask 077`；POSIX 下 600/700；Windows 跳过 |
+| 默认密码检测 | `main()` + `config.DEFAULT_PASSWORD_HASH` | 本地 `config.py` 可声明出厂默认密码哈希；启动时若 `PASSWORD_HASH` 与之相同则打印严重警告。该值禁止写入仓库任何文件 |
 
-**已知残余风险（个人自用可接受，公网部署前要处理）**：默认明文 HTTP（可通过 `config.SSL_CERT` 内置 HTTPS 消除，见 §10.1）；会话存内存（重启即全员下线、单进程限制）；无操作频率限制（仅登录有限制）；无审计日志轮转以外的日志文件；密码修改需手动改配置文件。
+**已知残余风险（个人自用可接受，公网部署前要处理）**：默认明文 HTTP（可通过 `config.SSL_CERT` 内置 HTTPS 消除，见 §10.1）；会话存内存（重启即全员下线、单进程限制）；除登录外的接口无频率限制；无审计日志轮转以外的日志文件；密码修改需手动改配置文件。
 
 ---
 
@@ -249,6 +250,30 @@ python3 app.py                       # 前台，Ctrl+C 停止（会优雅关闭 
 python3 app.py --port 8080           # 换端口（不改配置）
 nohup python3 app.py >> data/server.log 2>&1 &     # 后台
 ```
+
+**systemd 开机自启**（`/etc/systemd/system/lnbudget.service`）：
+
+```ini
+[Unit]
+Description=LnBudget online bookkeeping
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/LnBudget
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+User=yourname
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now lnbudget
+```
+
+**局域网访问**：手机 / 平板与服务器在同一局域网时直接访问 `http://服务器IP:8000`；访问不了先检查防火墙：`sudo ufw allow 8000`（或 `sudo firewall-cmd --add-port=8000/tcp --permanent && sudo firewall-cmd --reload`）。不建议直接暴露公网，确需外网请启用 HTTPS 或反向代理。
 
 **启用 HTTPS**：在 `config.py` 填 `SSL_CERT`（证书链 PEM）与 `SSL_KEY`（私钥 PEM，可留空表示同文件），直接 `python3 app.py` 即单端口 HTTPS；启动横幅会打印 `https://…` 与证书路径。证书无效会立即失败（退出码 1 + 中文错误），不会退回 HTTP。自签名证书生成命令见 README。
 
@@ -286,6 +311,7 @@ nohup python3 app.py >> data/server.log 2>&1 &     # 后台
 | 2026-08-26 | `static/js/charts.js` | 修复环形图外沿超出画布被裁切（新增 `maxR` 约束，`r` 按 1.17 收缩） |
 | 2026-10-27 | `PROJECT.md`（新增） | 本文档：系统现状知识库 |
 | 2026-10-27 | `app.py`、`config.py`、`test_api.py`、`README.md`、`PROJECT.md`、`DEVELOPMENT.md` | 支持内置 HTTPS：新增 `build_ssl_context()` / `_tls()` / `_session_cookie()`，`main()` 按 `SSL_CERT` 包装监听 socket；TLS ≥ 1.2、HSTS、Cookie `Secure`；自检增至 46 项（含 HTTPS 断言） |
+| 2026-11-22 | 全部文件 | 服务器稳定性加固（handler 超时 30s、并发 64、连接异常静默、HTTPS 握手延迟）；登录限速 / 密码长度上限 / 默认密码启动警告；`config.py` 移出版本控制并提供 `config.example.py`，清除仓库中的密码痕迹；`README.md` 精简为使用者向，技术细节归入本文档 |
 
 ---
 
